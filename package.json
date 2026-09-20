@@ -2,7 +2,7 @@
   "name": "crypto-payment-gateway",
   "version": "0.1.0",
   "private": true,
-  "license": "UNLICENSED",
+  "license": "AGPL-3.0-only",
   "packageManager": "pnpm@10.13.1",
   "engines": {
     "node": ">=22.0.0"

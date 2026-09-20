@@ -96,7 +96,7 @@ function main() {
   lines.push(`## Full dependency inventory by licence family`);
   lines.push(``);
   lines.push(`Every other family below (MIT, Apache-2.0 alone, ISC, BSD-2-Clause,`);
-  lines.push(`BSD-3-Clause, 0BSD) permits inclusion in a proprietary work without`);
+  lines.push(`BSD-3-Clause, 0BSD) permits inclusion in this work without`);
   lines.push(`further attribution obligation; the full list is kept here for`);
   lines.push(`completeness.`);
   lines.push(``);

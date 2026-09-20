@@ -2,7 +2,7 @@
   "name": "@gateway/api",
   "version": "0.1.0",
   "private": true,
-  "license": "UNLICENSED",
+  "license": "AGPL-3.0-only",
   "type": "commonjs",
   "scripts": {
     "build": "tsc -b",

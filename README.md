@@ -570,6 +570,16 @@ pnpm db:migrate       # create a migration (needs a shadow database)
 | 17 pass 1 | Security hardening: dependency remediation, API-key scope/livemode enforcement, least-privilege database role, merchant-suspension revocation, threat model, findings register | **Done** (see [ADR 0031](docs/decisions/0031-security-hardening-pass-1.md), [`docs/security/threat-model.md`](docs/security/threat-model.md), [`docs/security/findings-register.md`](docs/security/findings-register.md)). **Dependency remediation**: `pnpm audit --prod` went from 1 critical + 9 high (17 advisories total, across every severity) to **zero across every severity** - `@nestjs/common`/`core`/`platform-fastify`/`testing` upgraded 10.4.15 → 11.2.3 (removes the `@fastify/middie` dependency chain entirely rather than patching it), `@fastify/cookie`/`cors`/`helmet` upgraded to their Fastify-5-compatible majors, plus `pnpm.overrides` for `deepmerge-ts` and `fastify`; the CI `vulnerability-scan` job and `scripts/security/audit-report.mjs` both flipped from informational to a real gate now that the count they track is zero. **API-key scopes**: `ApiKey.scopes` was stored and returned but never checked by any guard - a new `ApiKeyScopeGuard` (mirroring `MerchantRoleGuard`'s existing `Reflector`/`SetMetadata` pattern) now enforces it on every API-key-guarded controller, proven by rejecting an under-scoped key and by flipping a pre-existing test that had explicitly documented the gap as "KNOWN GAP" to its now-passing, enforced form. **Test/live key and network separation**: a new `assertNetworkMatchesLivemode` (`packages/shared`) rejects a test-mode key targeting a mainnet network and a live key targeting a testnet, at both invoice creation and address registration, proven in both directions on both endpoints. **Database role**: every service connected to Postgres as `gateway`, a superuser needed only for point-in-time-recovery replication - a new least-privilege `gateway_app` role (no DDL, no superuser) now carries all production runtime traffic, proven by connecting as it and having every DDL/privilege-escalation attempt rejected while CRUD and future-table grants (via `ALTER DEFAULT PRIVILEGES`) succeed. **Merchant suspension**: `MerchantRoleGuard` now revokes dashboard access on the very next request after a merchant is suspended, not just eventually via API-key traffic (`ApiKeyGuard` already checked this); the narrower, currently-unreachable user-level suspension exposure is formally accepted and bounded to one `JWT_ACCESS_TTL_SECONDS` (default 15 minutes), consistent with an existing test's own documented rationale. **Bonus finding, fixed**: the admin audit-log listing endpoint's ascending sort order was hiding recent matching events once accumulated history passed one page - twice misdiagnosed across ADRs 0025/0030 as a flaky "write race," root-caused by direct row-count evidence and fixed (newest-first ordering). Full regression after every change: `pnpm --filter @gateway/api test` 179/179, `pnpm --filter @gateway/database test` 32/32 (including 6 new least-privilege-role proofs), `pnpm --filter @gateway/shared test` 89/89. **Disclosed, not this pass's scope**: the webhook SSRF guard's documented DNS-rebinding TOCTOU gap remains open; local development and the test suite still connect to Postgres as the migration role, not `gateway_app` (the production Kubernetes path is what changed). Phase 17 pass 2 (Tier 2 feature attack surface) is unchanged, still scheduled before Phase 30. |
 | 18 | Merchant and operator dashboard actions | **Done** (see `README.md#roadmap`'s Phase 18 section for the full account). Every merchant write action (API key create/revoke, webhook endpoint create/toggle/edit-events/rotate-secret/test, team member add/change-role/remove on a new "Team" page) and every operator write action (compliance review, merchant suspend/reactivate, reconciliation discrepancy resolution, refund approve/reject, plus a new filterable/paginated audit-log page) now works from `apps/web`, re-verified against a real running `apps/api` and Postgres - not just built. Every role check the UI hides is independently re-enforced by the API regardless of what the client sends, proven by E2E tests that call the raw API directly as a merchant, a DEVELOPER-role member, and a SUPPORT platform user and confirm each gets a `403`. 38 Playwright tests total (up from 20). **Two real, pre-existing bugs found and fixed only by driving the browser against the live stack, unrelated to this phase's own code**: `@fastify/cors`'s default `methods` list (`GET,HEAD,POST`) was silently blocking every PATCH/DELETE dashboard request - every earlier browser mutation had been POST-only, so this never surfaced before now (fixed in `apps/api/src/bootstrap.ts`, with two new regression tests in `apps/api/test/security/http-hardening.e2e.test.ts`); and `apps/api` failed to boot at all with metrics enabled, because Phase 16's dependency-health gauge pinged Redis before `RedisLifecycle` ran its own guarded connect, racing ioredis's lazy-connect into a hard crash (fixed in `apps/api/src/common/redis.module.ts`). **Disclosed, not built**: no pagination/filter UI was added to the other admin list pages (merchants, compliance, reconciliation, refunds, settlements) - each still shows only the API's first page of 20 rows; registering a deposit address stays API-key-only by design and has no dashboard UI. |
 
+## Support
+
+If this project is useful to you, donations are welcome (USDT, BEP20 / BNB Smart Chain only):
+
+```
+0xF84946c6e6EBe146a86Fb935025eF1bf49E1a59d
+```
+
+Send only USDT on the BEP20 network to this address; assets sent on other networks will be lost.
+
 ## Security
 
 Report vulnerabilities privately; do not open a public issue.
@@ -597,9 +607,16 @@ required licences before processing real funds.
 
 ## License
 
-All Rights Reserved. See [`LICENSE`](LICENSE). This repository is published
-for viewing as a portfolio project; no licence to use, copy or distribute it
-is granted.
+Copyright (c) 2026 Dropout324. Licensed under the
+[GNU Affero General Public License v3.0](LICENSE) (`AGPL-3.0-only`). You are
+free to use, study, modify and share this software under those terms; if you
+run a modified version as a network service you must offer its source to your
+users.
+
+**Commercial licence or purchase:** if the AGPL does not fit your use (for
+example, you want to keep your modifications closed), or you are interested in
+acquiring the project, contact morganarthur3244@gmail.com.
+
 Third-party open-source components are used under their own licences,
 attributed in [`NOTICE`](NOTICE) (`pnpm notice` to regenerate; checked in CI
 against the committed copy).
