@@ -1,0 +1,48 @@
+node_modules/
+dist/
+build/
+coverage/
+.turbo/
+*.tsbuildinfo
+.next/
+next-env.d.ts
+
+# Phase 15 CI artifacts - generated per build, not committed (see
+# docs/operations/release-process.md)
+/sbom/
+/security-reports/
+
+# Secrets - NEVER commit
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+secrets/
+infrastructure/kubernetes/secret.yaml
+
+# Local data
+*.log
+logs/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/*
+!.vscode/extensions.json
+
+
+# Local PostgreSQL cluster (conda / dev-postgres script)
+.pgdata/
+
+# Load-test fixture (throwaway dev-database credentials) and result dumps
+apps/api/loadtest/fixture.json
+apps/api/loadtest/results/
+
+# Playwright (apps/web e2e)
+apps/web/test-results/
+apps/web/playwright-report/
+apps/web/blob-report/
+apps/web/playwright/.cache/
+apps/web/e2e/.auth/

@@ -1,0 +1,23 @@
+# Deploy with: kubectl apply -k infrastructure/kubernetes/monitoring
+# (after the core services in infrastructure/kubernetes are up - Prometheus
+# scrapes their Service DNS names).
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: gateway
+resources:
+  - prometheus-config.yaml
+  - prometheus.yaml
+  - grafana.yaml
+configMapGenerator:
+  - name: grafana-dashboard
+    files:
+      - gateway-baseline.json=grafana-dashboard.json
+      - gateway-financial.json=grafana-dashboard-financial.json
+  # Phase 16/C6 (ADR 0030): the same file promtool tests directly
+  # (infrastructure/kubernetes/monitoring/test/alert-rules.test.yaml), never
+  # copy-pasted into a ConfigMap literal.
+  - name: prometheus-rules
+    files:
+      - alert-rules.yaml
+generatorOptions:
+  disableNameSuffixHash: true

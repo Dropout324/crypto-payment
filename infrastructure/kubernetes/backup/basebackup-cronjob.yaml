@@ -1,0 +1,76 @@
+# Daily pg_basebackup (Phase 14, ADR 0028) - the physical-backup half of
+# point-in-time recovery, alongside the postgres Deployment's continuous
+# archive_command (infrastructure/kubernetes/postgres.yaml) and the existing
+# nightly pg_dump (cronjob.yaml, ADR 0022). Base backups can run daily
+# (rather than matching the RPO target) because continuous WAL archiving
+# covers the gap between them - see ADR 0028 for the retention numbers and
+# the reasoning tying them together.
+#
+# Written to a `basebackups/` subdirectory of the same postgres-backups PVC
+# the pg_dump CronJob already uses, rather than a new PVC - one durable
+# backup store for both mechanisms (still local PVC storage, not offsite -
+# the disclosed Phase 14 gap, same as ADR 0022's baseline).
+#
+# This job also owns WAL archive retention: pruning `wal-archive` needs to
+# happen somewhere on a schedule (unbounded otherwise), and doing it here,
+# right after a fresh base backup lands, keeps the invariant "WAL always
+# outlives the oldest base backup you'd restore from" easy to state in one
+# place instead of two CronJobs disagreeing about it.
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: postgres-basebackup
+  namespace: gateway
+spec:
+  schedule: "30 3 * * *" # 03:30 UTC daily - 30 minutes after the pg_dump CronJob
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      template:
+        spec:
+          restartPolicy: OnFailure
+          containers:
+            - name: pg-basebackup
+              image: postgres:17-alpine
+              env:
+                - name: PGHOST
+                  value: postgres
+                - name: PGUSER
+                  valueFrom: { secretKeyRef: { name: gateway-secrets, key: POSTGRES_USER } }
+                - name: PGPASSWORD
+                  valueFrom: { secretKeyRef: { name: gateway-secrets, key: POSTGRES_PASSWORD } }
+              command: ["sh", "-c"]
+              args:
+                - |
+                  set -eu
+                  ts=$(date -u +%Y%m%dT%H%M%SZ)
+                  dest=/backups/basebackups/basebackup-${ts}
+                  mkdir -p "$dest"
+                  pg_basebackup -D "$dest" -Ft -z --wal-method=none -P -v
+                  date -u +%Y-%m-%dT%H:%M:%SZ > "$dest/BACKUP_COMPLETE_UTC"
+                  tar -tzf "$dest/base.tar.gz" > /dev/null
+                  echo "basebackup ok: $dest ($(wc -c < "$dest/base.tar.gz") bytes)"
+
+                  # Base backup retention: 7 days, matching the pg_dump
+                  # CronJob's own retention (ADR 0022).
+                  find /backups/basebackups -maxdepth 1 -type d -name 'basebackup-*' -mtime +7 -exec rm -rf {} +
+
+                  # WAL retention: 8 days - one day longer than the oldest
+                  # base backup kept, so there is never a window where WAL
+                  # needed to reach a still-retained base backup's start has
+                  # already been pruned (ADR 0028).
+                  find /wal-archive -type f -mtime +8 -delete
+                  echo "retention swept: basebackups>7d, wal-archive>8d"
+              volumeMounts:
+                - name: backups
+                  mountPath: /backups
+                - name: wal-archive
+                  mountPath: /wal-archive
+          volumes:
+            - name: backups
+              persistentVolumeClaim: { claimName: postgres-backups }
+            - name: wal-archive
+              persistentVolumeClaim: { claimName: wal-archive }

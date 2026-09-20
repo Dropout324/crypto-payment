@@ -1,0 +1,67 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: api
+  namespace: gateway
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: api }
+  template:
+    metadata:
+      labels: { app: api }
+    spec:
+      # A rolling deploy sends SIGTERM once traffic is already draining from
+      # this pod's Service endpoint - main.ts's own handler drains in-flight
+      # requests before exiting (ADR 0019); this just bounds how long
+      # Kubernetes waits before SIGKILL beyond SHUTDOWN_TIMEOUT_MS.
+      terminationGracePeriodSeconds: 30
+      containers:
+        - name: api
+          image: gateway-api:local
+          imagePullPolicy: IfNotPresent
+          envFrom:
+            - configMapRef: { name: gateway-config }
+            - secretRef: { name: gateway-secrets }
+          ports:
+            - name: http
+              containerPort: 4000
+            - name: metrics
+              containerPort: 9464
+          # Gates readiness/liveness until the app has actually bound its
+          # port - Nest's bootstrap (module wiring, Prisma engine connect)
+          # can take longer than a fixed initialDelaySeconds under load,
+          # and a liveness probe that starts checking before that finishes
+          # kills the container before it ever gets a chance to become
+          # ready (observed directly: a real kind deploy restarted this pod
+          # once because the 15s liveness delay fired mid-boot).
+          startupProbe:
+            httpGet: { path: /v1/health, port: http }
+            failureThreshold: 30
+            periodSeconds: 2
+          readinessProbe:
+            httpGet: { path: /v1/ready, port: http }
+            periodSeconds: 5
+            timeoutSeconds: 3
+          livenessProbe:
+            httpGet: { path: /v1/health, port: http }
+            periodSeconds: 10
+            timeoutSeconds: 3
+          resources:
+            requests: { cpu: "100m", memory: "192Mi" }
+            limits: { cpu: "500m", memory: "512Mi" }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: api
+  namespace: gateway
+spec:
+  selector: { app: api }
+  ports:
+    - name: http
+      port: 4000
+      targetPort: 4000
+    - name: metrics
+      port: 9464
+      targetPort: 9464

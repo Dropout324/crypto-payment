@@ -1,0 +1,54 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: worker
+  namespace: gateway
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: worker }
+  template:
+    metadata:
+      labels: { app: worker }
+    spec:
+      terminationGracePeriodSeconds: 30
+      containers:
+        - name: worker
+          image: gateway-worker:local
+          imagePullPolicy: IfNotPresent
+          envFrom:
+            - configMapRef: { name: gateway-config }
+            - secretRef: { name: gateway-secrets }
+          ports:
+            - name: ops
+              containerPort: 9465
+          # See api.yaml's comment - a startupProbe avoids a liveness probe
+          # racing the app's own boot time and killing it before it is
+          # ever marked ready.
+          startupProbe:
+            httpGet: { path: /health, port: ops }
+            failureThreshold: 30
+            periodSeconds: 2
+          readinessProbe:
+            httpGet: { path: /ready, port: ops }
+            periodSeconds: 5
+            timeoutSeconds: 3
+          livenessProbe:
+            httpGet: { path: /health, port: ops }
+            periodSeconds: 10
+            timeoutSeconds: 3
+          resources:
+            requests: { cpu: "50m", memory: "128Mi" }
+            limits: { cpu: "300m", memory: "384Mi" }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: worker
+  namespace: gateway
+spec:
+  selector: { app: worker }
+  ports:
+    - name: ops
+      port: 9465
+      targetPort: 9465

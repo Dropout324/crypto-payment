@@ -1,0 +1,62 @@
+# Nightly baseline backup: pg_dump (custom format) of the in-cluster
+# Postgres to a PVC, with a 7-day retention sweep. This is the scheduled
+# in-cluster counterpart to scripts/backup/pg-backup.sh (same pg_dump
+# invocation, run here as a CronJob instead of by hand) - see that script's
+# header and docs/decisions/0022-backup-baseline.md for what this baseline
+# does and does not cover (no point-in-time recovery, no measured RPO/RTO -
+# Phase 14).
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: postgres-backups
+  namespace: gateway
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: 5Gi
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: postgres-backup
+  namespace: gateway
+spec:
+  schedule: "0 3 * * *" # 03:00 UTC daily
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      template:
+        spec:
+          restartPolicy: OnFailure
+          containers:
+            - name: pg-backup
+              image: postgres:17-alpine
+              env:
+                - name: PGHOST
+                  value: postgres
+                - name: PGUSER
+                  valueFrom: { secretKeyRef: { name: gateway-secrets, key: POSTGRES_USER } }
+                - name: PGPASSWORD
+                  valueFrom: { secretKeyRef: { name: gateway-secrets, key: POSTGRES_PASSWORD } }
+                - name: PGDATABASE
+                  valueFrom: { secretKeyRef: { name: gateway-secrets, key: POSTGRES_DB } }
+              command: ["sh", "-c"]
+              args:
+                - |
+                  set -eu
+                  ts=$(date -u +%Y%m%dT%H%M%SZ)
+                  out=/backups/gateway-${ts}.dump
+                  pg_dump -Fc -f "$out"
+                  pg_restore --list "$out" > /dev/null
+                  echo "backup ok: $out ($(wc -c < "$out") bytes)"
+                  find /backups -name 'gateway-*.dump' -mtime +7 -delete
+              volumeMounts:
+                - name: backups
+                  mountPath: /backups
+          volumes:
+            - name: backups
+              persistentVolumeClaim: { claimName: postgres-backups }

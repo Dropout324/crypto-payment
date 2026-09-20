@@ -1,0 +1,201 @@
+# Baseline in-cluster PostgreSQL: a single Deployment + PVC, not a
+# StatefulSet or managed database. This matches the Phase 10 boundary
+# ("services deployable", not production PostgreSQL configuration/HA/backups
+# tuning - that is Phase 11/14 scope). A production deployment should point
+# DATABASE_URL at a managed PostgreSQL instance instead and skip this file
+# entirely; it exists so the manifests are usable standalone on a bare
+# cluster (kind/minikube included) without one.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: postgres-data
+  namespace: gateway
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: 5Gi
+---
+# Continuous WAL archive target (Phase 14, ADR 0029). Deliberately a
+# separate PVC from postgres-data: the whole point of point-in-time
+# recovery is that the WAL archive survives loss of the primary data
+# volume, so it must not share postgres-data's lifecycle. Same caveat as
+# postgres-data/postgres-backups: local PVC storage, not offsite - see
+# ADR 0029.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: wal-archive
+  namespace: gateway
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: 2Gi
+---
+# The official postgres image's default pg_hba.conf allows normal client
+# connections from any host (the `host all all all` rule
+# POSTGRES_HOST_AUTH_METHOD drives) but NOT replication connections - "all"
+# in the database field does not match a replication connection, and
+# `pg_basebackup`/streaming replication need one. Without this, `gateway`
+# being a superuser is not enough: pg_basebackup fails with "no pg_hba.conf
+# entry for replication connection..." (found for real running this
+# phase's drill, not by inspection - see ADR 0029). This runs once, via the
+# image's own /docker-entrypoint-initdb.d hook, immediately after initdb
+# creates pg_hba.conf on a cluster's first boot - it does not run again on
+# every restart, and does not run at all when PGDATA already has data (a
+# normal restart, or a PITR restore's staged PGDATA restored from a base
+# backup that already has this rule baked in from when IT was initialized).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: postgres-initdb
+  namespace: gateway
+data:
+  pg-hba-replication.sh: |
+    #!/bin/sh
+    set -e
+    echo "host replication ${POSTGRES_USER} all scram-sha-256" >> "$PGDATA/pg_hba.conf"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: postgres
+  namespace: gateway
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels: { app: postgres }
+  template:
+    metadata:
+      labels: { app: postgres }
+    spec:
+      # The postgres server process runs as the image's unprivileged
+      # `postgres` user (via gosu, from docker-entrypoint.sh) - but a
+      # freshly dynamically-provisioned wal-archive PVC is root-owned by
+      # default, and archive_command below runs as that same unprivileged
+      # user. Fix ownership once, before the main container starts, the
+      # same way docker-entrypoint.sh itself fixes $PGDATA's ownership -
+      # this container just does it for the extra volume that script
+      # doesn't know about. Runs as root (the image's exec-form default
+      # user; overriding `command` here bypasses ENTRYPOINT entirely, so
+      # docker-entrypoint.sh's own initdb/chown logic never runs in this
+      # step).
+      initContainers:
+        - name: fix-wal-archive-perms
+          image: postgres:17-alpine
+          command: ["sh", "-c", "mkdir -p /wal-archive && chown -R postgres:postgres /wal-archive"]
+          volumeMounts:
+            - name: wal-archive
+              mountPath: /wal-archive
+      containers:
+        - name: postgres
+          image: postgres:17-alpine
+          args:
+            - "postgres"
+            - "-c"
+            - "log_lock_waits=on"
+            - "-c"
+            - "deadlock_timeout=1s"
+            - "-c"
+            - "log_min_duration_statement=500"
+            - "-c"
+            - "max_connections=200"
+            # --- Point-in-time recovery (Phase 14, ADR 0028) ---
+            # wal_level=replica is PostgreSQL 17's own default; set
+            # explicitly so this manifest documents the requirement rather
+            # than depending on it silently. Needed for both WAL archiving
+            # and for pg_basebackup's replication-protocol connection.
+            - "-c"
+            - "wal_level=replica"
+            - "-c"
+            - "max_wal_senders=5"
+            - "-c"
+            - "archive_mode=on"
+            # test ! -f && cp: refuses to overwrite a segment that is
+            # already archived, so a retried/duplicate archive_command
+            # invocation (Postgres retries on any nonzero exit) can never
+            # silently clobber a good archived segment with a truncated
+            # one.
+            - "-c"
+            - "archive_command=test ! -f /wal-archive/%f && cp %p /wal-archive/%f"
+            # Forces a WAL segment switch at least this often even when
+            # idle, so RPO is bounded by this value rather than by "how
+            # long since enough write traffic filled a 16MB segment" -
+            # see ADR 0028 for the number and the measured RPO it produced.
+            - "-c"
+            - "archive_timeout=60"
+          env:
+            - name: POSTGRES_USER
+              valueFrom: { secretKeyRef: { name: gateway-secrets, key: POSTGRES_USER } }
+            - name: POSTGRES_PASSWORD
+              valueFrom: { secretKeyRef: { name: gateway-secrets, key: POSTGRES_PASSWORD } }
+            - name: POSTGRES_DB
+              valueFrom: { secretKeyRef: { name: gateway-secrets, key: POSTGRES_DB } }
+            - name: POSTGRES_INITDB_ARGS
+              value: "--encoding=UTF8 --locale=C"
+          ports:
+            - containerPort: 5432
+          # See infrastructure/kubernetes/api.yaml's comment - a
+          # startupProbe stops liveness from killing this container before
+          # initdb finishes (observed taking 90s+ on a cold image pull in
+          # kind) or before it recovers from host resource pressure. Budget
+          # widened for Phase 14 (60 -> 180s): a PITR restore leaves
+          # recovery.signal in place, and pg_isready only starts succeeding
+          # once WAL replay finishes and Postgres promotes - a cold-start
+          # threshold sized only for plain initdb would kill the container
+          # mid-replay on a large restore.
+          startupProbe:
+            exec:
+              command: ["pg_isready", "-U", "gateway", "-d", "gateway"]
+            failureThreshold: 60
+            periodSeconds: 3
+          readinessProbe:
+            exec:
+              command: ["pg_isready", "-U", "gateway", "-d", "gateway"]
+            periodSeconds: 5
+            # Default exec probe timeout (1s) is too tight under real host
+            # CPU pressure - observed causing `pg_isready` itself to time
+            # out (not fail) and the probe reading that as unready/dead
+            # even though Postgres was fine, just scheduled late. Widened
+            # so a slow host does not manufacture its own false-positive
+            # disaster.
+            timeoutSeconds: 5
+          livenessProbe:
+            exec:
+              command: ["pg_isready", "-U", "gateway", "-d", "gateway"]
+            periodSeconds: 10
+            timeoutSeconds: 5
+          resources:
+            requests: { cpu: "100m", memory: "256Mi" }
+            limits: { cpu: "1", memory: "1Gi" }
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+              subPath: pgdata
+            - name: wal-archive
+              mountPath: /wal-archive
+            - name: initdb-scripts
+              mountPath: /docker-entrypoint-initdb.d
+      volumes:
+        - name: data
+          persistentVolumeClaim: { claimName: postgres-data }
+        - name: wal-archive
+          persistentVolumeClaim: { claimName: wal-archive }
+        - name: initdb-scripts
+          configMap:
+            name: postgres-initdb
+            defaultMode: 0755
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+  namespace: gateway
+spec:
+  selector: { app: postgres }
+  ports:
+    - port: 5432
+      targetPort: 5432

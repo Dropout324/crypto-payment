@@ -1,0 +1,164 @@
+# Real promtool evidence that every Phase 16/C6 financial alert actually
+# fires, not just parses. Run with:
+#   docker run --rm --entrypoint promtool -v "$PWD:/etc/prometheus" \
+#     prom/prometheus:v3.7.3 test rules /etc/prometheus/test/alert-rules.test.yaml
+# (from infrastructure/kubernetes/monitoring/). See ADR 0030 for the full
+# transcript this was run against.
+rule_files:
+  - ../alert-rules.yaml
+
+evaluation_interval: 1m
+
+tests:
+  # 1. Blockchain monitor stopped: a scan loop's last-success gauge flatlines
+  # while wall-clock time keeps advancing.
+  - interval: 1m
+    input_series:
+      - series: 'gateway_monitor_last_success_timestamp_seconds{network="ETHEREUM"}'
+        values: '0x20'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: BlockchainMonitorStopped
+        exp_alerts:
+          - exp_labels:
+              network: ETHEREUM
+              severity: critical
+            exp_annotations:
+              summary: "Blockchain monitor for ETHEREUM has not completed a scan tick in over 5 minutes"
+              description: "No payment on ETHEREUM can be detected, confirmed or credited while this holds. Check apps/blockchain-monitor's logs and its RPC provider first."
+
+  # 2. Scan lag increasing: sustained lag above the example threshold.
+  - interval: 1m
+    input_series:
+      - series: 'gateway_monitor_scan_lag_blocks{network="POLYGON"}'
+        values: '250x20'
+    alert_rule_test:
+      - eval_time: 12m
+        alertname: ScanLagIncreasing
+        exp_alerts:
+          - exp_labels:
+              network: POLYGON
+              severity: warning
+            exp_annotations:
+              summary: "POLYGON's monitor is 250 blocks behind the chain tip"
+              description: "Sustained lag delays detection and confirmation for every invoice on this network. Check RPC provider latency/rate limits and gateway_monitor_tick_duration_seconds."
+
+  # 3. Reconciliation discrepancy detected: the open-discrepancy gauge goes
+  # positive - the real path `apps/worker/src/reconciliation-sweep.ts` and
+  # `apps/blockchain-monitor`'s reorg handling both drive in production.
+  - interval: 1m
+    input_series:
+      - series: 'gateway_reconciliation_open_discrepancies'
+        values: '0 1x10'
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: ReconciliationDiscrepancyDetected
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+            exp_annotations:
+              summary: "A ledger reconciliation discrepancy was recorded"
+              description: "Per SPEC section 21 this is NEVER auto-corrected. Review GET /v1/admin/reconciliation-discrepancies immediately - this can mean a real financial imbalance."
+
+  # 4. Webhook delivery backlog: PENDING+FAILED deliveries above the example
+  # threshold, sustained.
+  - interval: 1m
+    input_series:
+      - series: 'gateway_webhook_backlog{status="PENDING"}'
+        values: '80x10'
+    alert_rule_test:
+      - eval_time: 6m
+        alertname: WebhookDeliveryBacklog
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+            exp_annotations:
+              summary: "80 webhook deliveries are PENDING or awaiting retry"
+              description: "Merchants are not being notified of payment events in a timely way. Check apps/worker's webhook loop and merchant endpoint health (gateway_webhook_delivery_failures_total)."
+
+  # 5. Database unavailable: the dependency-health gauge reads 0 - the real
+  # signal `startDependencyHealthGauge` (packages/observability) sets when
+  # its own `SELECT 1` check throws.
+  - interval: 1m
+    input_series:
+      - series: 'gateway_dependency_up{dependency="database",service="api"}'
+        values: '0x5'
+    alert_rule_test:
+      - eval_time: 2m
+        alertname: DatabaseUnavailable
+        exp_alerts:
+          - exp_labels:
+              dependency: database
+              service: api
+              severity: critical
+            exp_annotations:
+              summary: "api cannot reach its database"
+              description: "No invoice, payment or ledger operation can proceed on this instance. Check PostgreSQL availability and connection limits."
+
+  # 6. Redis unavailable: same gauge, the Redis check.
+  - interval: 1m
+    input_series:
+      - series: 'gateway_dependency_up{dependency="redis",service="api"}'
+        values: '0x5'
+    alert_rule_test:
+      - eval_time: 2m
+        alertname: RedisUnavailable
+        exp_alerts:
+          - exp_labels:
+              dependency: redis
+              service: api
+              severity: critical
+            exp_annotations:
+              summary: "api cannot reach Redis"
+              description: "Rate limiting depends completely on Redis (ADR 0011) - apps/api cannot safely serve requests while this holds."
+
+  # 7. RPC provider unavailable: `instrumentAdapter` (apps/blockchain-monitor)
+  # counts a real, continuing string of adapter failures.
+  - interval: 1m
+    input_series:
+      - series: 'gateway_monitor_rpc_failures_total{network="ETHEREUM",method="getCurrentBlock"}'
+        values: '0+1x15'
+    alert_rule_test:
+      - eval_time: 14m
+        alertname: RpcProviderUnavailable
+        exp_alerts:
+          - exp_labels:
+              network: ETHEREUM
+              method: getCurrentBlock
+              severity: critical
+            exp_annotations:
+              summary: "ETHEREUM's RPC provider is failing calls to getCurrentBlock"
+              description: "Sustained RPC failures stop detection and confirmation on this network. Check the provider's status and the configured fallback URL (ADR 0025)."
+
+  # 8. Signing failure: `MetricsRecordingSigningAuditTrail` (apps/api) counts
+  # a real backend `sign_failed` event.
+  - interval: 1m
+    input_series:
+      - series: 'gateway_signing_failures_total{stage="sign_failed"}'
+        values: '0x3 1x10'
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: SigningFailure
+        exp_alerts:
+          - exp_labels:
+              stage: sign_failed
+              severity: critical
+            exp_annotations:
+              summary: "A signing backend call failed (stage=sign_failed)"
+              description: "A signing request passed policy validation but the backend itself failed. Review the signing audit trail (audit_logs, resource_type=signing_request) immediately."
+
+  # 9. Abnormal payment processing rate: steady processing for 40 minutes,
+  # then a hard stall - `rate(...[1h]) > 0 and rate(...[15m]) == 0`.
+  - interval: 1m
+    input_series:
+      - series: 'gateway_payments_processed_total'
+        values: '0+1x40 40x30'
+    alert_rule_test:
+      - eval_time: 65m
+        alertname: AbnormalPaymentProcessingRate
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+            exp_annotations:
+              summary: "Payment processing rate for this instance moved abnormally"
+              description: "Either a sudden spike (3x+ the last hour's average) or a stall after sustained processing. Check for abuse, a stuck monitor/worker, or a merchant integration issue."

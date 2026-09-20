@@ -1,0 +1,63 @@
+{
+  "title": "Gateway - Baseline (Phase 10)",
+  "uid": "gateway-baseline",
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "refresh": "15s",
+  "time": { "from": "now-1h", "to": "now" },
+  "panels": [
+    {
+      "id": 1,
+      "title": "Scrape targets up",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 24, "x": 0, "y": 0 },
+      "targets": [{ "expr": "up{job=~\"gateway-.*\"}", "legendFormat": "{{job}}" }],
+      "fieldConfig": { "defaults": { "mappings": [{ "type": "value", "options": { "0": { "text": "DOWN" }, "1": { "text": "UP" } } }] } }
+    },
+    {
+      "id": 2,
+      "title": "HTTP request rate (api, web)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 4 },
+      "targets": [{ "expr": "sum(rate(gateway_http_requests_total[5m])) by (service)", "legendFormat": "{{service}}" }]
+    },
+    {
+      "id": 3,
+      "title": "HTTP 5xx rate (api, web)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 4 },
+      "targets": [{ "expr": "sum(rate(gateway_http_requests_total{status_code=~\"5..\"}[5m])) by (service)", "legendFormat": "{{service}} 5xx" }]
+    },
+    {
+      "id": 4,
+      "title": "HTTP p95 latency",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 12 },
+      "targets": [{ "expr": "histogram_quantile(0.95, sum(rate(gateway_http_request_duration_seconds_bucket[5m])) by (le, service))", "legendFormat": "{{service}} p95" }]
+    },
+    {
+      "id": 5,
+      "title": "Worker: seconds since last successful tick",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 12 },
+      "targets": [{ "expr": "time() - gateway_worker_last_success_timestamp_seconds", "legendFormat": "{{loop}}" }]
+    },
+    {
+      "id": 6,
+      "title": "Monitor: scan lag (blocks behind chain tip)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 20 },
+      "targets": [{ "expr": "gateway_monitor_scan_lag_blocks", "legendFormat": "{{network}}" }]
+    },
+    {
+      "id": 7,
+      "title": "Poll-loop tick errors (worker + monitor)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 20 },
+      "targets": [
+        { "expr": "sum(rate(gateway_worker_tick_errors_total[5m])) by (loop)", "legendFormat": "worker/{{loop}}" },
+        { "expr": "sum(rate(gateway_monitor_tick_errors_total[5m])) by (network)", "legendFormat": "monitor/{{network}}" }
+      ]
+    }
+  ]
+}

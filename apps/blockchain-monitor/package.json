@@ -1,0 +1,34 @@
+{
+  "name": "@gateway/blockchain-monitor",
+  "version": "0.1.0",
+  "private": true,
+  "license": "UNLICENSED",
+  "type": "commonjs",
+  "scripts": {
+    "build": "tsc -b",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint .",
+    "dev": "tsx watch src/main.ts",
+    "start": "node dist/main.js",
+    "test": "vitest run",
+    "test:coverage": "vitest run --coverage",
+    "test:unit": "vitest run"
+  },
+  "dependencies": {
+    "@gateway/blockchain": "workspace:*",
+    "@gateway/database": "workspace:*",
+    "@gateway/ledger": "workspace:*",
+    "@gateway/observability": "workspace:*",
+    "@gateway/payments": "workspace:*",
+    "@gateway/shared": "workspace:*",
+    "prom-client": "^15.1.3"
+  },
+  "devDependencies": {
+    "@gateway/security": "workspace:*",
+    "@gateway/webhooks": "workspace:*",
+    "@types/node": "^22.10.5",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.3",
+    "vitest": "^3.0.5"
+  }
+}

@@ -1,0 +1,76 @@
+# Baseline in-cluster Redis - single Deployment + PVC, same rationale as
+# postgres.yaml. A production deployment should point REDIS_URL at a managed
+# Redis instance instead.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: redis-data
+  namespace: gateway
+spec:
+  accessModes: ["ReadWriteOnce"]
+  resources:
+    requests:
+      storage: 1Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: redis
+  namespace: gateway
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels: { app: redis }
+  template:
+    metadata:
+      labels: { app: redis }
+    spec:
+      containers:
+        - name: redis
+          image: redis:7-alpine
+          # Queue state (webhook deliveries, settlement work) must survive a
+          # restart - appendonly persistence, never evict under memory
+          # pressure (an evicted queue key is a lost payment notification).
+          args:
+            - "redis-server"
+            - "--appendonly"
+            - "yes"
+            - "--appendfsync"
+            - "everysec"
+            - "--maxmemory-policy"
+            - "noeviction"
+          ports:
+            - containerPort: 6379
+          # See infrastructure/kubernetes/api.yaml's comment.
+          startupProbe:
+            exec: { command: ["redis-cli", "ping"] }
+            failureThreshold: 30
+            periodSeconds: 2
+          readinessProbe:
+            exec: { command: ["redis-cli", "ping"] }
+            periodSeconds: 5
+          livenessProbe:
+            exec: { command: ["redis-cli", "ping"] }
+            periodSeconds: 10
+          resources:
+            requests: { cpu: "50m", memory: "64Mi" }
+            limits: { cpu: "500m", memory: "512Mi" }
+          volumeMounts:
+            - name: data
+              mountPath: /data
+      volumes:
+        - name: data
+          persistentVolumeClaim: { claimName: redis-data }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis
+  namespace: gateway
+spec:
+  selector: { app: redis }
+  ports:
+    - port: 6379
+      targetPort: 6379

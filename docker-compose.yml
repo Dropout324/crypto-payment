@@ -1,0 +1,209 @@
+# Local development stack.
+#
+# This is the supported development environment and the one production mirrors.
+# Production itself runs the Kubernetes manifests in infrastructure/kubernetes;
+# nothing here (trust auth, exposed ports, plaintext env) is production-safe.
+
+name: crypto-payment-gateway
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-gateway}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-gateway_dev_password}
+      POSTGRES_DB: ${POSTGRES_DB:-gateway}
+      # Deterministic collation so index ordering matches production.
+      POSTGRES_INITDB_ARGS: "--encoding=UTF8 --locale=C"
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./infrastructure/docker/postgres-init:/docker-entrypoint-initdb.d:ro
+    command:
+      - "postgres"
+      # The payment path runs serializable transactions; log anything that
+      # blocks long enough to indicate a lock-ordering problem.
+      - "-c"
+      - "log_lock_waits=on"
+      - "-c"
+      - "deadlock_timeout=1s"
+      - "-c"
+      - "log_min_duration_statement=500"
+      - "-c"
+      - "max_connections=200"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-gateway} -d ${POSTGRES_DB:-gateway}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    volumes:
+      - redis_data:/data
+    command:
+      - "redis-server"
+      # Queue state must survive a restart: BullMQ jobs are webhook deliveries
+      # and settlement work that cannot simply be dropped.
+      - "--appendonly"
+      - "yes"
+      - "--appendfsync"
+      - "everysec"
+      # Never evict: an evicted queue key is a lost payment notification.
+      - "--maxmemory-policy"
+      - "noeviction"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  api:
+    build:
+      context: .
+      dockerfile: infrastructure/docker/Dockerfile
+      # `debug`, not `api`: this service bind-mounts source and runs
+      # `pnpm ... dev` (tsx watch), which needs devDependencies that the
+      # `api` runtime target deliberately does not carry (see ADR 0021).
+      target: debug
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      NODE_ENV: development
+      DATABASE_URL: postgresql://${POSTGRES_USER:-gateway}:${POSTGRES_PASSWORD:-gateway_dev_password}@postgres:5432/${POSTGRES_DB:-gateway}?schema=public
+      REDIS_URL: redis://redis:6379
+    env_file:
+      - .env
+    ports:
+      - "${API_PORT:-4000}:4000"
+      # /metrics only - never the public port (ADR 0019). Bound to localhost
+      # only: publishing without a bind address exposes it on every host
+      # interface, not just loopback, which is exactly what the separate-port
+      # design is meant to avoid.
+      - "127.0.0.1:${METRICS_PORT:-9464}:9464"
+    volumes:
+      - ./apps:/app/apps
+      - ./packages:/app/packages
+      - /app/node_modules
+    command: ["pnpm", "--filter", "@gateway/api", "dev"]
+
+  worker:
+    build:
+      context: .
+      dockerfile: infrastructure/docker/Dockerfile
+      # `debug`, not `worker` - see the api service's target comment.
+      target: debug
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      NODE_ENV: development
+      DATABASE_URL: postgresql://${POSTGRES_USER:-gateway}:${POSTGRES_PASSWORD:-gateway_dev_password}@postgres:5432/${POSTGRES_DB:-gateway}?schema=public
+      REDIS_URL: redis://redis:6379
+    env_file:
+      - .env
+    ports:
+      # /health, /ready, /metrics - this service has no other HTTP server.
+      # Bound to localhost only - see the api service's METRICS_PORT comment.
+      - "127.0.0.1:${WORKER_HEALTH_PORT:-9465}:9465"
+    volumes:
+      - ./apps:/app/apps
+      - ./packages:/app/packages
+      - /app/node_modules
+    command: ["pnpm", "--filter", "@gateway/worker", "dev"]
+
+  blockchain-monitor:
+    build:
+      context: .
+      dockerfile: infrastructure/docker/Dockerfile
+      # `debug`, not `monitor` - see the api service's target comment.
+      target: debug
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      NODE_ENV: development
+      DATABASE_URL: postgresql://${POSTGRES_USER:-gateway}:${POSTGRES_PASSWORD:-gateway_dev_password}@postgres:5432/${POSTGRES_DB:-gateway}?schema=public
+      REDIS_URL: redis://redis:6379
+    env_file:
+      - .env
+    ports:
+      # /health, /ready, /metrics - this service has no other HTTP server.
+      # Bound to localhost only - see the api service's METRICS_PORT comment.
+      - "127.0.0.1:${MONITOR_HEALTH_PORT:-9466}:9466"
+    volumes:
+      - ./apps:/app/apps
+      - ./packages:/app/packages
+      - /app/node_modules
+    command: ["pnpm", "--filter", "@gateway/blockchain-monitor", "dev"]
+
+  web:
+    build:
+      context: .
+      dockerfile: infrastructure/docker/Dockerfile
+      # `debug`, not `web` - see the api service's target comment.
+      target: debug
+    restart: unless-stopped
+    depends_on:
+      - api
+    environment:
+      NODE_ENV: development
+      NEXT_PUBLIC_API_URL: http://localhost:${API_PORT:-4000}
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./apps/web:/app/apps/web
+      - ./packages:/app/packages
+      - /app/node_modules
+      - /app/apps/web/.next
+    command: ["pnpm", "--filter", "@gateway/web", "dev"]
+
+  # Bitcoin regtest node (Phase 13 - ADR 0027). Opt-in: `docker compose --profile bitcoin up bitcoind-regtest`.
+  # Not part of the default stack - most development does not touch Bitcoin,
+  # and regtest is a local, deterministic chain the tests fully control
+  # (generate blocks, invalidate blocks for reorg tests), never a shared or
+  # production network.
+  bitcoind-regtest:
+    image: ruimarinho/bitcoin-core:24
+    restart: unless-stopped
+    profiles: ["bitcoin"]
+    command:
+      - "-regtest=1"
+      - "-server=1"
+      - "-txindex=1"
+      - "-rpcallowip=0.0.0.0/0"
+      - "-rpcbind=0.0.0.0"
+      - "-rpcuser=${BITCOIN_RPC_USER:-gateway}"
+      - "-rpcpassword=${BITCOIN_RPC_PASSWORD:-gateway_dev_password}"
+      - "-fallbackfee=0.0002"
+    ports:
+      - "18443:18443"
+    volumes:
+      - bitcoin_regtest_data:/home/bitcoin/.bitcoin
+    healthcheck:
+      test: ["CMD-SHELL", "bitcoin-cli -regtest -rpcuser=${BITCOIN_RPC_USER:-gateway} -rpcpassword=${BITCOIN_RPC_PASSWORD:-gateway_dev_password} getblockchaininfo"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+volumes:
+  postgres_data:
+  redis_data:
+  bitcoin_regtest_data:

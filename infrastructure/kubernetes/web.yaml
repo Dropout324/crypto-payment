@@ -1,0 +1,59 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: web
+  namespace: gateway
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: web }
+  template:
+    metadata:
+      labels: { app: web }
+    spec:
+      terminationGracePeriodSeconds: 30
+      containers:
+        - name: web
+          image: gateway-web:local
+          imagePullPolicy: IfNotPresent
+          envFrom:
+            - configMapRef: { name: gateway-config }
+            - secretRef: { name: gateway-secrets }
+          ports:
+            - name: http
+              containerPort: 3000
+            - name: metrics
+              containerPort: 9467
+          # See api.yaml's comment - a startupProbe avoids a liveness probe
+          # racing the app's own boot time and killing it before it is
+          # ever marked ready.
+          startupProbe:
+            httpGet: { path: /health, port: http }
+            failureThreshold: 30
+            periodSeconds: 2
+          readinessProbe:
+            httpGet: { path: /health, port: http }
+            periodSeconds: 5
+            timeoutSeconds: 3
+          livenessProbe:
+            httpGet: { path: /health, port: http }
+            periodSeconds: 10
+            timeoutSeconds: 3
+          resources:
+            requests: { cpu: "100m", memory: "192Mi" }
+            limits: { cpu: "500m", memory: "512Mi" }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: web
+  namespace: gateway
+spec:
+  selector: { app: web }
+  ports:
+    - name: http
+      port: 3000
+      targetPort: 3000
+    - name: metrics
+      port: 9467
+      targetPort: 9467

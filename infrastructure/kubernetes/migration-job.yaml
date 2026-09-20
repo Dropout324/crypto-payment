@@ -1,0 +1,45 @@
+# Runs `prisma migrate deploy` once against the in-cluster Postgres before
+# api/worker/monitor start, then provisions the least-privilege `gateway_app`
+# role those three services actually connect as (Phase 17 pass 1, ADR 0031) -
+# `provision-app-role.ts` is idempotent, so re-running it here on every
+# deploy (including ones with no new migration) is deliberate, not wasted
+# work: it is also how a table a *new* migration just created gets its grants
+# applied to any already-existing rows/tables from before `gateway_app`
+# existed. Uses the `debug` Docker target (see
+# infrastructure/docker/Dockerfile) purely because it is the only target that
+# carries the Prisma CLI + schema - never run debug as a long-lived service.
+#
+# Re-apply after every image rebuild that adds a migration:
+#   kubectl delete job -n gateway gateway-migrate --ignore-not-found
+#   kubectl apply -f infrastructure/kubernetes/migration-job.yaml
+#   kubectl wait -n gateway --for=condition=complete job/gateway-migrate --timeout=120s
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: gateway-migrate
+  namespace: gateway
+spec:
+  backoffLimit: 5
+  template:
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        - name: migrate
+          image: gateway-debug:local
+          imagePullPolicy: IfNotPresent
+          command: ["sh", "-c"]
+          args:
+            - |
+              set -eu
+              until nc -z postgres 5432; do echo "waiting for postgres..."; sleep 2; done
+              cd /app && pnpm --filter @gateway/database migrate:deploy
+              pnpm --filter @gateway/database exec tsx prisma/provision-app-role.ts
+          env:
+            # Superuser connection: `prisma migrate deploy` and
+            # `provision-app-role.ts`'s `ALTER DEFAULT PRIVILEGES` both need
+            # to run as the role that owns the schema's tables. Never the
+            # role api/worker/monitor connect as.
+            - name: DATABASE_URL
+              valueFrom: { secretKeyRef: { name: gateway-secrets, key: DATABASE_MIGRATE_URL } }
+            - name: GATEWAY_APP_DB_PASSWORD
+              valueFrom: { secretKeyRef: { name: gateway-secrets, key: GATEWAY_APP_DB_PASSWORD } }

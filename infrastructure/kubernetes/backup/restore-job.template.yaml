@@ -1,0 +1,45 @@
+# Template for a one-off restore drill inside the cluster. Not applied
+# directly - scripts/kubernetes/restore-drill.sh substitutes DUMP_FILE and
+# TARGET_DB and applies the result. Mounts the same postgres-backups PVC
+# the CronJob writes to, read-only.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: postgres-restore-drill
+  namespace: gateway
+spec:
+  backoffLimit: 0
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: pg-restore
+          image: postgres:17-alpine
+          env:
+            - name: PGHOST
+              value: postgres
+            - name: PGUSER
+              valueFrom: { secretKeyRef: { name: gateway-secrets, key: POSTGRES_USER } }
+            - name: PGPASSWORD
+              valueFrom: { secretKeyRef: { name: gateway-secrets, key: POSTGRES_PASSWORD } }
+            - name: DUMP_FILE
+              value: "__DUMP_FILE__"
+            - name: TARGET_DB
+              value: "__TARGET_DB__"
+          command: ["sh", "-c"]
+          args:
+            - |
+              set -eu
+              test -f "/backups/$DUMP_FILE"
+              psql -d postgres -c "DROP DATABASE IF EXISTS \"$TARGET_DB\""
+              psql -d postgres -c "CREATE DATABASE \"$TARGET_DB\""
+              pg_restore --no-owner --no-acl -d "$TARGET_DB" "/backups/$DUMP_FILE"
+              echo "restore drill complete: $DUMP_FILE -> $TARGET_DB"
+              psql -d "$TARGET_DB" -c "SELECT count(*) AS merchants FROM merchants;"
+          volumeMounts:
+            - name: backups
+              mountPath: /backups
+              readOnly: true
+      volumes:
+        - name: backups
+          persistentVolumeClaim: { claimName: postgres-backups }

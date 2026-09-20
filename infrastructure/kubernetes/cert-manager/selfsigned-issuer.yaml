@@ -1,0 +1,19 @@
+# Baseline TLS for this zero-cost pass: a self-signed ClusterIssuer, so
+# `infrastructure/kubernetes/ingress.yaml` has a real, working HTTPS
+# certificate to terminate TLS with even without a registered domain or an
+# ACME account. A browser will not trust this certificate (there is no real
+# CA behind it) - that is the correct, disclosed limitation, not a bug. See
+# docs/operations/deployment-guide.md's TLS section for the one-line swap to
+# a real ACME ClusterIssuer (Let's Encrypt) once a domain exists: same
+# Ingress annotation, different issuer `kind`/`name`, nothing else in this
+# repo changes.
+#
+# Requires cert-manager installed first (not part of this repo - see the
+# deployment guide):
+#   kubectl apply -f https://github.com/cert-manager/cert-manager/releases/download/v1.16.2/cert-manager.yaml
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: selfsigned
+spec:
+  selfSigned: {}

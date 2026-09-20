@@ -1,0 +1,94 @@
+# Non-secret configuration shared by api/worker/monitor/web. Values mirror
+# .env.example's defaults. Secrets (DATABASE_URL, JWT_*, ENCRYPTION_KEY, ...)
+# live in the Secret this Namespace also needs - see secret.example.yaml and
+# scripts/kubernetes/generate-secret.sh, never in this ConfigMap.
+#
+# This is deliberately a flat key=value ConfigMap consumed via envFrom, not a
+# templated/overlay-based configuration system - environment separation
+# (dev/staging/prod overlays, a real secrets backend) beyond this is left to
+# a new owner's own deployment tooling (see docs/operations/deployment-guide.md).
+#
+# NODE_ENV=production means apps/api, apps/worker and apps/blockchain-monitor
+# each run their own validateProductionConfig() at boot (Phase 11) and refuse
+# to start on an unsafe value - CORS_ALLOWED_ORIGINS below must therefore be
+# a real https:// origin, never localhost or "*". The values here
+# (*.gateway.local) match infrastructure/kubernetes/ingress.yaml's hostnames
+# for local verification; a real deployment replaces both consistently with
+# its own domain.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: gateway-config
+  namespace: gateway
+data:
+  NODE_ENV: "production"
+  LOG_LEVEL: "info"
+  CORS_ALLOWED_ORIGINS: "https://app.gateway.local"
+
+  API_PORT: "4000"
+  API_HOST: "0.0.0.0"
+  PUBLIC_API_URL: "https://api.gateway.local"
+  PUBLIC_WEB_URL: "https://app.gateway.local"
+  # Has NO effect on the running web Pod - Next.js inlines this at Docker
+  # BUILD time, not pod-start time (ADR 0024's addendum; fixed in Phase 11
+  # with a build ARG of the same name, infrastructure/docker/Dockerfile).
+  # Kept here only as a record of the value the image was actually built
+  # with, so a new owner does not need to reverse-engineer it from the
+  # running container.
+  NEXT_PUBLIC_API_URL: "https://api.gateway.local"
+
+  JWT_ACCESS_TTL_SECONDS: "900"
+  JWT_REFRESH_TTL_SECONDS: "2592000"
+  JWT_ISSUER: "crypto-payment-gateway"
+  JWT_AUDIENCE: "gateway-dashboard"
+
+  ARGON2_MEMORY_KIB: "19456"
+  ARGON2_TIME_COST: "2"
+  ARGON2_PARALLELISM: "1"
+
+  RATE_LIMIT_API_PER_MINUTE: "120"
+  RATE_LIMIT_AUTH_PER_MINUTE: "10"
+  RATE_LIMIT_INVOICE_CREATE_PER_MINUTE: "60"
+  RATE_LIMIT_TRUST_PROXY: "false"
+
+  WEBHOOK_MAX_ATTEMPTS: "8"
+  WEBHOOK_TIMEOUT_MS: "10000"
+  WEBHOOK_REPLAY_WINDOW_SECONDS: "300"
+  WEBHOOK_BLOCK_PRIVATE_NETWORKS: "true"
+  WEBHOOK_DISABLE_AFTER_CONSECUTIVE_FAILURES: "50"
+
+  WORKER_WEBHOOK_POLL_INTERVAL_MS: "5000"
+  WORKER_WEBHOOK_BATCH_SIZE: "100"
+  WORKER_EXPIRY_SWEEP_INTERVAL_MS: "30000"
+  WORKER_EXPIRY_SWEEP_BATCH_SIZE: "200"
+
+  INVOICE_DEFAULT_EXPIRY_SECONDS: "900"
+  INVOICE_MAX_EXPIRY_SECONDS: "86400"
+
+  EXCHANGE_RATE_PROVIDERS: "coingecko,binance"
+  EXCHANGE_RATE_TIMEOUT_MS: "3000"
+  EXCHANGE_RATE_MAX_AGE_SECONDS: "120"
+  EXCHANGE_RATE_CACHE_TTL_SECONDS: "30"
+  BINANCE_API_BASE: "https://api.binance.com"
+
+  MONITOR_POLL_INTERVAL_MS: "5000"
+  MONITOR_BLOCK_BATCH_SIZE: "50"
+  MONITOR_LEASE_SECONDS: "60"
+  MONITOR_MAX_LAG_BLOCKS: "50"
+
+  KMS_PROVIDER: "none"
+  # "disabled" is the only value validateProductionConfig accepts here
+  # (Phase 12, ADR 0026) - Mode A (custodial signing) is not live, and no
+  # real KMS/HSM account exists to configure regardless.
+  SIGNING_BACKEND: "disabled"
+  COMPLIANCE_PROVIDER: "none"
+  COMPLIANCE_REVIEW_THRESHOLD_USD_CENTS: "1000000"
+  SANCTIONS_SCREENING_ENABLED: "false"
+
+  OTEL_ENABLED: "false"
+  METRICS_ENABLED: "true"
+  METRICS_PORT: "9464"
+  WORKER_HEALTH_PORT: "9465"
+  MONITOR_HEALTH_PORT: "9466"
+  WEB_METRICS_PORT: "9467"
+  SHUTDOWN_TIMEOUT_MS: "10000"

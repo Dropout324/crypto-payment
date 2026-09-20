@@ -1,0 +1,103 @@
+# Financial alert rules (Phase 16/C6, ADR 0030). Every rule here maps to one
+# metric introduced or already present for that purpose - see the ADR for the
+# full mapping and the promtool evidence that each one actually fires.
+#
+# Thresholds below (block counts, failure counts, backlog sizes, the
+# payment-rate multiplier) are DISCLOSED EXAMPLES, not measured production
+# baselines - this system has none yet (Phase 24/31 are where real mainnet
+# traffic would come from). A new owner tunes every `expr` threshold to their
+# own traffic before relying on these in production; the rule NAMES, the
+# metrics they read and the alerting logic shape are what this phase
+# delivers and proves.
+groups:
+  - name: gateway-financial-alerts
+    rules:
+      - alert: BlockchainMonitorStopped
+        expr: (time() - gateway_monitor_last_success_timestamp_seconds) > 300
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Blockchain monitor for {{ $labels.network }} has not completed a scan tick in over 5 minutes"
+          description: "No payment on {{ $labels.network }} can be detected, confirmed or credited while this holds. Check apps/blockchain-monitor's logs and its RPC provider first."
+
+      - alert: ScanLagIncreasing
+        expr: gateway_monitor_scan_lag_blocks > 100
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $labels.network }}'s monitor is {{ $value }} blocks behind the chain tip"
+          description: "Sustained lag delays detection and confirmation for every invoice on this network. Check RPC provider latency/rate limits and gateway_monitor_tick_duration_seconds."
+
+      - alert: ReconciliationDiscrepancyDetected
+        expr: increase(gateway_reconciliation_discrepancies_total[1h]) > 0 or gateway_reconciliation_open_discrepancies > 0
+        for: 0m
+        labels:
+          severity: critical
+        annotations:
+          summary: "A ledger reconciliation discrepancy was recorded"
+          description: "Per SPEC section 21 this is NEVER auto-corrected. Review GET /v1/admin/reconciliation-discrepancies immediately - this can mean a real financial imbalance."
+
+      - alert: WebhookDeliveryBacklog
+        expr: sum(gateway_webhook_backlog) > 50
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $value }} webhook deliveries are PENDING or awaiting retry"
+          description: "Merchants are not being notified of payment events in a timely way. Check apps/worker's webhook loop and merchant endpoint health (gateway_webhook_delivery_failures_total)."
+
+      - alert: DatabaseUnavailable
+        expr: gateway_dependency_up{dependency="database"} == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "{{ $labels.service }} cannot reach its database"
+          description: "No invoice, payment or ledger operation can proceed on this instance. Check PostgreSQL availability and connection limits."
+
+      - alert: RedisUnavailable
+        expr: gateway_dependency_up{dependency="redis"} == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "{{ $labels.service }} cannot reach Redis"
+          description: "Rate limiting depends completely on Redis (ADR 0011) - apps/api cannot safely serve requests while this holds."
+
+      - alert: RpcProviderUnavailable
+        expr: increase(gateway_monitor_rpc_failures_total[5m]) > 3
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "{{ $labels.network }}'s RPC provider is failing calls to {{ $labels.method }}"
+          description: "Sustained RPC failures stop detection and confirmation on this network. Check the provider's status and the configured fallback URL (ADR 0025)."
+
+      - alert: SigningFailure
+        expr: increase(gateway_signing_failures_total{stage="sign_failed"}[15m]) > 0
+        for: 0m
+        labels:
+          severity: critical
+        annotations:
+          summary: "A signing backend call failed (stage={{ $labels.stage }})"
+          description: "A signing request passed policy validation but the backend itself failed. Review the signing audit trail (audit_logs, resource_type=signing_request) immediately."
+
+      - alert: AbnormalPaymentProcessingRate
+        expr: |
+          (
+            rate(gateway_payments_processed_total[5m])
+              > (3 * avg_over_time(rate(gateway_payments_processed_total[5m])[1h:5m])) + 0.05
+          )
+          or
+          (
+            rate(gateway_payments_processed_total[1h]) > 0
+              and rate(gateway_payments_processed_total[15m]) == 0
+          )
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Payment processing rate for this instance moved abnormally"
+          description: "Either a sudden spike (3x+ the last hour's average) or a stall after sustained processing. Check for abuse, a stuck monitor/worker, or a merchant integration issue."

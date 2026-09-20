@@ -1,0 +1,48 @@
+# Build context for infrastructure/docker/Dockerfile.
+#
+# The Dockerfile runs `COPY . .`, so anything not excluded here ends up both in
+# the context sent to the daemon and in a layer of the `build` stage. Two
+# classes of file must never get there: secrets, and host-built state that the
+# image is supposed to produce for itself.
+
+# --- Secrets: never in a build context, never in a layer -------------------
+.env
+.env.*
+*.pem
+*.key
+secrets/
+
+# --- Host dependency trees and build outputs -------------------------------
+# The image installs from the lockfile and compiles from source. A host
+# node_modules carries Windows/macOS native binaries (argon2, Prisma engines)
+# that do not run on Alpine.
+**/node_modules
+**/dist
+**/.next
+**/coverage
+**/.turbo
+# Must go with dist: `tsc -b` trusts a tsbuildinfo, so copying one without its
+# dist makes the compiler decide everything is up to date and emit nothing.
+**/*.tsbuildinfo
+**/next-env.d.ts
+
+# --- Local data -------------------------------------------------------------
+.pgdata/
+logs/
+**/*.log
+
+# --- Test artefacts and load-test output (fixture.json holds credentials) --
+apps/api/loadtest/fixture.json
+apps/api/loadtest/results/
+apps/web/test-results/
+apps/web/playwright-report/
+apps/web/blob-report/
+apps/web/playwright/.cache/
+apps/web/e2e/.auth/
+
+# --- VCS, editor and agent state -------------------------------------------
+.git/
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

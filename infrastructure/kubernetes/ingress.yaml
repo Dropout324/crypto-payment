@@ -1,0 +1,73 @@
+# Reverse-proxy/TLS termination for the two public-facing services (web,
+# api) - everything else (worker, monitor, postgres, redis) stays
+# ClusterIP-only, reachable inside the namespace but never through this
+# Ingress.
+#
+# Requires, in order, neither of which is part of this repo (cluster
+# add-ons, not application resources - see docs/operations/deployment-guide.md):
+#   1. An ingress controller (verified against ingress-nginx):
+#      kubectl apply -f https://raw.githubusercontent.com/kubernetes/ingress-nginx/controller-v1.11.3/deploy/static/provider/cloud/deploy.yaml
+#   2. cert-manager plus a ClusterIssuer - see
+#      infrastructure/kubernetes/cert-manager/selfsigned-issuer.yaml for the
+#      zero-cost baseline one this manifest references.
+#
+# The hostnames below (*.gateway.local) are not publicly resolvable - they
+# exist for local verification via `curl --resolve` (see the deployment
+# guide). A real deployment replaces them with the owner's real domain names
+# and, per that guide, swaps `selfsigned` for a real ACME ClusterIssuer -
+# nothing else here changes.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: gateway-web
+  namespace: gateway
+  annotations:
+    cert-manager.io/cluster-issuer: selfsigned
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts: ["app.gateway.local"]
+      secretName: gateway-web-tls
+  rules:
+    - host: app.gateway.local
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: web
+                port:
+                  number: 3000
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: gateway-api
+  namespace: gateway
+  annotations:
+    cert-manager.io/cluster-issuer: selfsigned
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    # The API is called directly by the browser (apps/web/src/lib/config.ts,
+    # same-site via a shared registrable domain - see that file's own
+    # comment), never proxied through the web Ingress above, so CORS is
+    # already handled application-side (CORS_ALLOWED_ORIGINS,
+    # validateProductionConfig) - nothing added at the Ingress layer, to
+    # avoid two places disagreeing about the same header.
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts: ["api.gateway.local"]
+      secretName: gateway-api-tls
+  rules:
+    - host: api.gateway.local
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: api
+                port:
+                  number: 4000

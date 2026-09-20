@@ -1,0 +1,103 @@
+# Baseline Grafana: one provisioned Prometheus datasource, one provisioned
+# dashboard (grafana-dashboard.json). Anonymous viewer access is enabled so
+# the dashboard is reachable without a login for this baseline - a real
+# deployment should disable that and put Grafana behind the same auth/
+# reverse-proxy boundary as everything else (Phase 11 scope).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-provisioning
+  namespace: gateway
+data:
+  datasources.yaml: |
+    apiVersion: 1
+    datasources:
+      - name: Prometheus
+        type: prometheus
+        access: proxy
+        url: http://prometheus:9090
+        isDefault: true
+        uid: prometheus
+  dashboards.yaml: |
+    apiVersion: 1
+    providers:
+      - name: gateway
+        folder: Gateway
+        type: file
+        options:
+          path: /var/lib/grafana/dashboards
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: grafana
+  namespace: gateway
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: grafana }
+  template:
+    metadata:
+      labels: { app: grafana }
+    spec:
+      containers:
+        - name: grafana
+          image: grafana/grafana:11.5.2
+          env:
+            - name: GF_AUTH_ANONYMOUS_ENABLED
+              value: "true"
+            - name: GF_AUTH_ANONYMOUS_ORG_ROLE
+              value: "Viewer"
+            - name: GF_AUTH_DISABLE_LOGIN_FORM
+              value: "false"
+          ports:
+            - containerPort: 3000
+          # See infrastructure/kubernetes/api.yaml's comment - a
+          # startupProbe stops liveness from killing this container before
+          # it finishes booting under load. Missing here initially, this
+          # pod was observed stuck in CrashLoopBackOff (50+ restarts) during
+          # a sustained period of host CPU/memory pressure from concurrent
+          # CI verification work - the other four services survived the
+          # same pressure only because they already had this fix.
+          startupProbe:
+            httpGet: { path: /api/health, port: 3000 }
+            failureThreshold: 30
+            periodSeconds: 2
+          readinessProbe:
+            httpGet: { path: /api/health, port: 3000 }
+            periodSeconds: 5
+          livenessProbe:
+            httpGet: { path: /api/health, port: 3000 }
+            periodSeconds: 10
+          resources:
+            requests: { cpu: "50m", memory: "128Mi" }
+            limits: { cpu: "300m", memory: "384Mi" }
+          volumeMounts:
+            - name: provisioning
+              mountPath: /etc/grafana/provisioning/datasources/datasources.yaml
+              subPath: datasources.yaml
+            - name: provisioning
+              mountPath: /etc/grafana/provisioning/dashboards/dashboards.yaml
+              subPath: dashboards.yaml
+            - name: dashboards
+              mountPath: /var/lib/grafana/dashboards/gateway-baseline.json
+              subPath: gateway-baseline.json
+            - name: dashboards
+              mountPath: /var/lib/grafana/dashboards/gateway-financial.json
+              subPath: gateway-financial.json
+      volumes:
+        - name: provisioning
+          configMap: { name: grafana-provisioning }
+        - name: dashboards
+          configMap: { name: grafana-dashboard }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: grafana
+  namespace: gateway
+spec:
+  selector: { app: grafana }
+  ports:
+    - port: 3000
+      targetPort: 3000

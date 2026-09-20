@@ -1,0 +1,53 @@
+{
+  "name": "@gateway/api",
+  "version": "0.1.0",
+  "private": true,
+  "license": "UNLICENSED",
+  "type": "commonjs",
+  "scripts": {
+    "build": "tsc -b",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint .",
+    "dev": "tsx watch src/main.ts",
+    "start": "node dist/main.js",
+    "test": "vitest run",
+    "test:coverage": "vitest run --coverage",
+    "test:unit": "vitest run"
+  },
+  "dependencies": {
+    "@fastify/cookie": "^11.1.2",
+    "@fastify/cors": "^11.3.0",
+    "@fastify/helmet": "^13.1.1",
+    "@gateway/blockchain": "workspace:*",
+    "@gateway/database": "workspace:*",
+    "@gateway/exchange-rate": "workspace:*",
+    "@gateway/ledger": "workspace:*",
+    "@gateway/observability": "workspace:*",
+    "@gateway/payments": "workspace:*",
+    "@gateway/security": "workspace:*",
+    "@gateway/shared": "workspace:*",
+    "@gateway/signing": "workspace:*",
+    "@gateway/webhooks": "workspace:*",
+    "@nestjs/common": "^11.2.3",
+    "@nestjs/core": "^11.2.3",
+    "@nestjs/platform-fastify": "^11.2.3",
+    "class-transformer": "^0.5.1",
+    "class-validator": "^0.14.1",
+    "fastify": "^5.2.1",
+    "ioredis": "^5.11.1",
+    "reflect-metadata": "^0.2.2",
+    "rxjs": "^7.8.1"
+  },
+  "devDependencies": {
+    "@nestjs/testing": "^11.2.3",
+    "@types/autocannon": "^7.12.7",
+    "@types/node": "^22.10.5",
+    "@types/supertest": "^6.0.2",
+    "autocannon": "^8.0.0",
+    "supertest": "^7.0.0",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.3",
+    "viem": "^2.56.5",
+    "vitest": "^3.0.5"
+  }
+}

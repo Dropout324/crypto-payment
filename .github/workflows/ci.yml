@@ -1,0 +1,271 @@
+# Phase 10 CI baseline (see docs/decisions/0023-cicd-platform.md for why
+# GitHub Actions). Runs lint, typecheck, the full test suite (against real
+# Postgres + Redis service containers - ADR 0020's integration suites are
+# not mocked and will fail outright without them), the compile build, and
+# then actually builds all four Docker runtime targets and runs
+# scripts/docker/smoke-test.mjs against them (ADR 0021) - the same gate
+# that caught the Phase 9.5 runtime-image regression, now run on every push
+# instead of by hand.
+#
+# Phase 15 (C5, ADR 0028) added the rest of the gate breadth this comment
+# used to call out as missing: coverage reporting + artifact (the `test`
+# job), an SBOM + licence allowlist gate (`license-check`), and an
+# informational vulnerability scan (`vulnerability-scan`) - see
+# docs/operations/release-process.md for what each gates and why
+# vulnerability-scan is deliberately not blocking yet.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  PNPM_VERSION: "10.13.1"
+  NODE_VERSION: "22"
+
+jobs:
+  lint-typecheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with: { version: "${{ env.PNPM_VERSION }}" }
+      - uses: actions/setup-node@v4
+        with: { node-version: "${{ env.NODE_VERSION }}", cache: "pnpm" }
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm lint
+      # `pnpm typecheck` resolves cross-package imports (e.g.
+      # @gateway/blockchain importing @gateway/shared) against each
+      # dependency's *compiled* `dist/*.d.ts` (see packages/shared's
+      # package.json `types` field) - `dist/` is gitignored, so on a clean
+      # checkout typecheck fails with "Cannot find module '@gateway/shared'"
+      # until dependencies are actually built first. Caught by a real `act`
+      # run against a clean checkout - it passed locally only because this
+      # repo's working tree still had `dist/` output from earlier local
+      # development. Only the library packages need building here (the
+      # `build` job already builds everything, apps included, separately) -
+      # apps/api, apps/worker, apps/blockchain-monitor and apps/web are
+      # typechecked directly from source and are not an import target of
+      # any other package, so building them too would just spend an extra
+      # ~7 minutes on `next build`'s prerendering for no typecheck benefit.
+      - run: pnpm db:generate
+      - run: >-
+          pnpm --filter @gateway/shared build &&
+          pnpm --filter @gateway/security build &&
+          pnpm --filter @gateway/observability build &&
+          pnpm --filter @gateway/signing build &&
+          pnpm --filter @gateway/blockchain build &&
+          pnpm --filter @gateway/payments build &&
+          pnpm --filter @gateway/exchange-rate build &&
+          pnpm --filter @gateway/database build &&
+          pnpm --filter @gateway/ledger build &&
+          pnpm --filter @gateway/webhooks build
+      - run: pnpm typecheck
+
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with: { version: "${{ env.PNPM_VERSION }}" }
+      - uses: actions/setup-node@v4
+        with: { node-version: "${{ env.NODE_VERSION }}", cache: "pnpm" }
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm db:generate
+      # Every package/app except @gateway/web (root `build` script's exact
+      # order, minus its last line). apps/web's own `next build` is
+      # deliberately not run bare here - see ADR 0023's addendum: it is the
+      # one step in this whole pipeline confirmed to fail only under act's
+      # runner image (a Next.js prerender crash never reproduced in the
+      # real Docker build or a native local build), and it would be pure
+      # duplicate work here regardless - docker-smoke already performs the
+      # real, production `next build` for apps/web inside the actual
+      # node:22-alpine image every run, which is the build that ships.
+      - run: >-
+          pnpm --filter @gateway/shared build &&
+          pnpm --filter @gateway/security build &&
+          pnpm --filter @gateway/observability build &&
+          pnpm --filter @gateway/signing build &&
+          pnpm --filter @gateway/blockchain build &&
+          pnpm --filter @gateway/payments build &&
+          pnpm --filter @gateway/exchange-rate build &&
+          pnpm --filter @gateway/database build &&
+          pnpm --filter @gateway/ledger build &&
+          pnpm --filter @gateway/webhooks build &&
+          pnpm --filter @gateway/api build &&
+          pnpm --filter @gateway/blockchain-monitor build &&
+          pnpm --filter @gateway/worker build
+
+  test:
+    runs-on: ubuntu-latest
+    services:
+      # apps/api/test/setup-env.ts intentionally hardcodes
+      # `postgresql://postgres@127.0.0.1:5432/gateway_test` (user
+      # `postgres`, no password) rather than reading TEST_DATABASE_URL -
+      # see ADR 0020 ("apps/api's suite is the one intentionally NOT wired
+      # to read .env at all", after a real `.env`-override bug). This
+      # service's credentials must match that literal, or apps/api's e2e
+      # suite fails with a real Prisma P1000 auth error - caught by a real
+      # `act` run with different (gateway/gateway_ci_password) credentials.
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_HOST_AUTH_METHOD: trust
+          POSTGRES_DB: gateway_test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres -d gateway_test"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+      redis:
+        image: redis:7-alpine
+        ports: ["6379:6379"]
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      # ADR 0020: every integration suite resolves TEST_DATABASE_URL, never
+      # DATABASE_URL, and refuses to run if it doesn't contain "test".
+      TEST_DATABASE_URL: postgresql://postgres@localhost:5432/gateway_test?schema=public
+      REDIS_URL: redis://localhost:6379
+      JWT_ACCESS_SECRET: ci-access-secret-0000000000000000000000000000000000000000
+      JWT_REFRESH_SECRET: ci-refresh-secret-0000000000000000000000000000000000000000
+      # Must decode to exactly 32 bytes (@gateway/security's EnvKeyProvider
+      # enforces this) - a hand-typed placeholder here previously decoded to
+      # 33 bytes and failed every webhooks suite in a real `act` run with
+      # "ENCRYPTION_KEY must decode to 32 bytes, got 33". Generated with
+      # `node -e "console.log(require('crypto').randomBytes(32).toString('base64'))"`.
+      ENCRYPTION_KEY: DP3wWmUn2+IWwEg3ZbVyhTULIm5dfzcEvQ6doOTVbb4=
+      ENCRYPTION_KEY_ID: ci-1
+      # Phase 13 (ADR 0027): a local, deterministic Bitcoin regtest node -
+      # started as a plain step below, not a `services:` entry, because
+      # GitHub Actions service containers cannot be given custom CLI args
+      # (no `command:` field in that syntax), and this image needs
+      # `-regtest -txindex=1` to be usable at all.
+      BITCOIN_REGTEST_RPC_URL: http://127.0.0.1:18443
+      BITCOIN_REGTEST_RPC_USER: gateway
+      BITCOIN_REGTEST_RPC_PASSWORD: gateway_ci_password
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with: { version: "${{ env.PNPM_VERSION }}" }
+      - uses: actions/setup-node@v4
+        with: { node-version: "${{ env.NODE_VERSION }}", cache: "pnpm" }
+      - name: Start Bitcoin regtest node
+        run: |
+          docker run -d --name bitcoind-regtest -p 18443:18443 \
+            ruimarinho/bitcoin-core:24 \
+            -regtest=1 -server=1 -txindex=1 -rpcallowip=0.0.0.0/0 -rpcbind=0.0.0.0 \
+            -rpcuser=${{ env.BITCOIN_REGTEST_RPC_USER }} -rpcpassword=${{ env.BITCOIN_REGTEST_RPC_PASSWORD }} \
+            -fallbackfee=0.0002
+          for i in $(seq 1 30); do
+            docker exec bitcoind-regtest bitcoin-cli -regtest -rpcuser=${{ env.BITCOIN_REGTEST_RPC_USER }} -rpcpassword=${{ env.BITCOIN_REGTEST_RPC_PASSWORD }} getblockchaininfo > /dev/null 2>&1 && exit 0
+            sleep 2
+          done
+          echo "bitcoind-regtest never became ready" >&2
+          docker logs bitcoind-regtest
+          exit 1
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm db:generate
+      # Same reason as lint-typecheck's build step: several suites (e.g.
+      # packages/observability importing @gateway/security) resolve a
+      # sibling workspace package via its compiled `dist/`, not source -
+      # a real `act` run against a clean checkout failed 4 test files with
+      # "Failed to resolve entry for package '@gateway/security'" without
+      # this. apps are excluded (not needed by anything else, and
+      # apps/web's `next build` is slow and irrelevant to this job).
+      - run: >-
+          pnpm --filter @gateway/shared build &&
+          pnpm --filter @gateway/security build &&
+          pnpm --filter @gateway/observability build &&
+          pnpm --filter @gateway/signing build &&
+          pnpm --filter @gateway/blockchain build &&
+          pnpm --filter @gateway/payments build &&
+          pnpm --filter @gateway/exchange-rate build &&
+          pnpm --filter @gateway/database build &&
+          pnpm --filter @gateway/ledger build &&
+          pnpm --filter @gateway/webhooks build
+      - run: pnpm test:db:migrate
+      # Phase 15 (C5): coverage-instrumented run instead of a plain `pnpm
+      # test` - same suites, same pass/fail gate, plus a per-project
+      # coverage/coverage-summary.json each project's own vitest.config.ts
+      # now writes (see vitest.coverage.base.mjs). Aggregated below into one
+      # repo-wide baseline and published as a build artifact, not gated on a
+      # minimum percentage - see docs/operations/release-process.md for why.
+      - run: pnpm test:coverage
+      - run: pnpm test:coverage:report
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: coverage-report
+          path: coverage/summary.json
+          retention-days: 30
+
+  license-check:
+    # Phase 15 (C5): independent of build/test - no compiled dist/ or
+    # database needed, just the lockfile - so this stays fast and runs in
+    # parallel with lint-typecheck/build/test rather than after them.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with: { version: "${{ env.PNPM_VERSION }}" }
+      - uses: actions/setup-node@v4
+        with: { node-version: "${{ env.NODE_VERSION }}", cache: "pnpm" }
+      - run: pnpm install --frozen-lockfile
+      - name: Licence check
+        run: pnpm licenses:check
+      - name: Generate SBOM
+        run: pnpm sbom
+      - name: Regenerate NOTICE and check it matches the committed file
+        run: |
+          pnpm notice
+          git diff --exit-code NOTICE || (echo "NOTICE is out of date - run 'pnpm notice' and commit the result" && exit 1)
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: sbom
+          path: sbom/sbom.cdx.json
+          retention-days: 90
+
+  vulnerability-scan:
+    # Phase 15 (C5) added this job informationally; Phase 17 pass 1 (ADR
+    # 0031) closed the dependency-advisory gap it was reporting and made
+    # this job a real gate - see scripts/security/audit-report.mjs's header
+    # comment and docs/operations/release-process.md#5-vulnerability-scanning.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with: { version: "${{ env.PNPM_VERSION }}" }
+      - uses: actions/setup-node@v4
+        with: { node-version: "${{ env.NODE_VERSION }}", cache: "pnpm" }
+      - run: pnpm install --frozen-lockfile
+      - name: Vulnerability scan (pnpm audit)
+        run: pnpm audit:report
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: vulnerability-report
+          path: security-reports/pnpm-audit.json
+          retention-days: 90
+
+  docker-smoke:
+    runs-on: ubuntu-latest
+    # license-check and vulnerability-scan are both real gates (Phase 15
+    # and Phase 17 pass 1 respectively) - see each job's own comment above.
+    needs: [lint-typecheck, build, test, license-check, vulnerability-scan]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: "${{ env.NODE_VERSION }}" }
+      # No pnpm/Node deps needed beyond the runner's own Node to run the
+      # smoke-test script itself - everything else happens inside the
+      # Docker builds it drives.
+      - name: Docker runtime build + smoke test
+        run: node scripts/docker/smoke-test.mjs

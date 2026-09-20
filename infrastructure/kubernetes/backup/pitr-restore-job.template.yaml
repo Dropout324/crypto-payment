@@ -1,0 +1,81 @@
+# Template for staging a point-in-time-recovery restore (Phase 14, ADR
+# 0028). Not applied directly - scripts/kubernetes/pitr-restore-drill.sh
+# substitutes __BASEBACKUP_NAME__ and __TARGET_TIME__ and applies the
+# result.
+#
+# Preconditions this Job assumes (the driver script enforces them):
+#   - the postgres Deployment is scaled to 0 (nothing else has PGDATA open)
+#   - postgres-data is a FRESH, EMPTY PVC (the previous one was deleted -
+#     this is the "destroy" half of the drill; this Job is the "restore"
+#     half)
+#   - postgres-backups and wal-archive still hold the base backup and the
+#     archived WAL (they are not part of what was destroyed - see ADR 0028
+#     for why the drill scopes destruction to postgres-data, not the backup
+#     store itself)
+#
+# This Job only STAGES the restored PGDATA (extracts the base backup, writes
+# recovery.signal + restore_command) - it does not start Postgres. Scaling
+# the postgres Deployment back to 1 afterwards is what actually replays WAL
+# and promotes; that is the point at which RTO's clock stops.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: postgres-pitr-restore
+  namespace: gateway
+spec:
+  backoffLimit: 0
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: pitr-stage
+          image: postgres:17-alpine
+          env:
+            - name: BASEBACKUP_NAME
+              value: "__BASEBACKUP_NAME__"
+            - name: TARGET_TIME
+              value: "__TARGET_TIME__"
+          command: ["sh", "-c"]
+          args:
+            - |
+              set -eu
+              if [ "$BASEBACKUP_NAME" = "latest" ]; then
+                dir=$(ls -d /backups/basebackups/basebackup-* | sort | tail -1)
+              else
+                dir="/backups/basebackups/$BASEBACKUP_NAME"
+              fi
+              test -f "$dir/base.tar.gz"
+              echo "staging from $dir (completed $(cat "$dir/BACKUP_COMPLETE_UTC" 2>/dev/null || echo unknown))"
+
+              mkdir -p /pgdata
+              tar -xzf "$dir/base.tar.gz" -C /pgdata
+              chown -R postgres:postgres /pgdata
+              chmod 700 /pgdata
+              touch /pgdata/recovery.signal
+
+              {
+                echo "restore_command = 'cp \"/wal-archive/%f\" \"%p\"'"
+                if [ "$TARGET_TIME" != "latest" ]; then
+                  echo "recovery_target_time = '$TARGET_TIME'"
+                  echo "recovery_target_action = 'promote'"
+                fi
+              } >> /pgdata/postgresql.auto.conf
+
+              echo "PITR staging complete: target=$TARGET_TIME"
+          volumeMounts:
+            - name: data
+              mountPath: /pgdata
+              subPath: pgdata
+            - name: backups
+              mountPath: /backups
+              readOnly: true
+            - name: wal-archive
+              mountPath: /wal-archive
+              readOnly: true
+      volumes:
+        - name: data
+          persistentVolumeClaim: { claimName: postgres-data }
+        - name: backups
+          persistentVolumeClaim: { claimName: postgres-backups }
+        - name: wal-archive
+          persistentVolumeClaim: { claimName: wal-archive }

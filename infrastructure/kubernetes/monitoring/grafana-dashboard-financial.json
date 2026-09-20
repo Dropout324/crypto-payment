@@ -1,0 +1,97 @@
+{
+  "title": "Gateway - Financial Operations (Phase 16)",
+  "uid": "gateway-financial",
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "refresh": "15s",
+  "time": { "from": "now-1h", "to": "now" },
+  "panels": [
+    {
+      "id": 1,
+      "title": "Dependency health (database, Redis)",
+      "type": "stat",
+      "gridPos": { "h": 4, "w": 24, "x": 0, "y": 0 },
+      "targets": [{ "expr": "gateway_dependency_up", "legendFormat": "{{service}}/{{dependency}}" }],
+      "fieldConfig": { "defaults": { "mappings": [{ "type": "value", "options": { "0": { "text": "DOWN" }, "1": { "text": "UP" } } }] } }
+    },
+    {
+      "id": 2,
+      "title": "Webhook delivery failures (rate, by outcome)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 4 },
+      "targets": [{ "expr": "sum(rate(gateway_webhook_delivery_failures_total[5m])) by (outcome)", "legendFormat": "{{outcome}}" }]
+    },
+    {
+      "id": 3,
+      "title": "Webhook delivery backlog (by status)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 4 },
+      "targets": [{ "expr": "gateway_webhook_backlog", "legendFormat": "{{status}}" }]
+    },
+    {
+      "id": 4,
+      "title": "Payment detection latency (invoice created -> first sighting)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 12 },
+      "targets": [
+        { "expr": "histogram_quantile(0.50, sum(rate(gateway_payment_detection_latency_seconds_bucket[15m])) by (le))", "legendFormat": "p50" },
+        { "expr": "histogram_quantile(0.95, sum(rate(gateway_payment_detection_latency_seconds_bucket[15m])) by (le))", "legendFormat": "p95" }
+      ]
+    },
+    {
+      "id": 5,
+      "title": "Payment confirmation latency (first sighting -> confirmed outcome)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 12 },
+      "targets": [
+        { "expr": "histogram_quantile(0.50, sum(rate(gateway_payment_confirmation_latency_seconds_bucket[15m])) by (le))", "legendFormat": "p50" },
+        { "expr": "histogram_quantile(0.95, sum(rate(gateway_payment_confirmation_latency_seconds_bucket[15m])) by (le))", "legendFormat": "p95" }
+      ]
+    },
+    {
+      "id": 6,
+      "title": "Payments processed (rate)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 20 },
+      "targets": [{ "expr": "rate(gateway_payments_processed_total[5m])", "legendFormat": "payments/sec" }]
+    },
+    {
+      "id": 7,
+      "title": "Settlements by status",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 20 },
+      "targets": [{ "expr": "gateway_settlements_by_status", "legendFormat": "{{status}}" }]
+    },
+    {
+      "id": 8,
+      "title": "Reconciliation discrepancies (recorded rate + still open)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 28 },
+      "targets": [
+        { "expr": "sum(rate(gateway_reconciliation_discrepancies_total[15m])) by (kind)", "legendFormat": "recorded/{{kind}}" },
+        { "expr": "gateway_reconciliation_open_discrepancies", "legendFormat": "open" }
+      ]
+    },
+    {
+      "id": 9,
+      "title": "RPC failures (rate, by network + method)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 28 },
+      "targets": [{ "expr": "sum(rate(gateway_monitor_rpc_failures_total[5m])) by (network, method)", "legendFormat": "{{network}}/{{method}}" }]
+    },
+    {
+      "id": 10,
+      "title": "Signing failures (rate, by stage)",
+      "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 36 },
+      "targets": [{ "expr": "sum(rate(gateway_signing_failures_total[15m])) by (stage)", "legendFormat": "{{stage}}" }]
+    },
+    {
+      "id": 11,
+      "title": "Active alerts (this dashboard's own alert rules)",
+      "type": "table",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 36 },
+      "targets": [{ "expr": "ALERTS{alertstate=\"firing\"}", "legendFormat": "{{alertname}}" }]
+    }
+  ]
+}

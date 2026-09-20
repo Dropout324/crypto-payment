@@ -1,0 +1,46 @@
+# Baseline scrape config: static in-cluster targets for the four services'
+# ops ports (ADR 0019). Kubernetes service-discovery-based scraping
+# (pod annotations, kube-state-metrics, node-exporter) is still out of scope
+# - this is deliberately the smallest thing that proves /metrics is actually
+# being scraped end to end. Phase 16/C6 (ADR 0030) adds `alert-rules.yaml`
+# (financial alerts) as a second key in this same ConfigMap, mounted into the
+# same `/etc/prometheus` directory as `prometheus.yml` itself - see
+# `rule_files` below.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: prometheus-config
+  namespace: gateway
+data:
+  prometheus.yml: |
+    global:
+      scrape_interval: 15s
+
+    rule_files:
+      - /etc/prometheus/rules/alert-rules.yaml
+
+    # Each service's own registry already stamps a `service` default label
+    # on every metric (packages/observability/src/metrics.ts,
+    # registry.setDefaultLabels) - no per-job `labels:` here, so that label
+    # is never shadowed/renamed to exported_service by Prometheus's
+    # scrape-vs-target label collision rule.
+    scrape_configs:
+      - job_name: gateway-api
+        static_configs:
+          - targets: ["api.gateway.svc.cluster.local:9464"]
+
+      - job_name: gateway-worker
+        static_configs:
+          - targets: ["worker.gateway.svc.cluster.local:9465"]
+
+      - job_name: gateway-monitor
+        static_configs:
+          - targets: ["monitor.gateway.svc.cluster.local:9466"]
+
+      - job_name: gateway-web
+        static_configs:
+          - targets: ["web.gateway.svc.cluster.local:9467"]
+
+      - job_name: prometheus
+        static_configs:
+          - targets: ["localhost:9090"]

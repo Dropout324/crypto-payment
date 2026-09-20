@@ -1,0 +1,71 @@
+{
+  "name": "crypto-payment-gateway",
+  "version": "0.1.0",
+  "private": true,
+  "license": "UNLICENSED",
+  "packageManager": "pnpm@10.13.1",
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "scripts": {
+    "build": "pnpm --filter @gateway/shared build && pnpm --filter @gateway/security build && pnpm --filter @gateway/observability build && pnpm --filter @gateway/signing build && pnpm --filter @gateway/blockchain build && pnpm --filter @gateway/payments build && pnpm --filter @gateway/exchange-rate build && pnpm --filter @gateway/database build && pnpm --filter @gateway/ledger build && pnpm --filter @gateway/webhooks build && pnpm --filter @gateway/api build && pnpm --filter @gateway/blockchain-monitor build && pnpm --filter @gateway/worker build && pnpm --filter @gateway/web build",
+    "typecheck": "pnpm -r typecheck",
+    "lint": "pnpm -r lint",
+    "test": "pnpm --filter @gateway/shared test && pnpm --filter @gateway/security test && pnpm --filter @gateway/observability test && pnpm --filter @gateway/signing test && pnpm --filter @gateway/blockchain test && pnpm --filter @gateway/payments test && pnpm --filter @gateway/exchange-rate test && pnpm --filter @gateway/database test && pnpm --filter @gateway/ledger test && pnpm --filter @gateway/webhooks test && pnpm --filter @gateway/api test && pnpm --filter @gateway/blockchain-monitor test && pnpm --filter @gateway/worker test",
+    "test:coverage": "pnpm --filter @gateway/shared test:coverage && pnpm --filter @gateway/security test:coverage && pnpm --filter @gateway/observability test:coverage && pnpm --filter @gateway/signing test:coverage && pnpm --filter @gateway/blockchain test:coverage && pnpm --filter @gateway/payments test:coverage && pnpm --filter @gateway/exchange-rate test:coverage && pnpm --filter @gateway/database test:coverage && pnpm --filter @gateway/ledger test:coverage && pnpm --filter @gateway/webhooks test:coverage && pnpm --filter @gateway/api test:coverage && pnpm --filter @gateway/blockchain-monitor test:coverage && pnpm --filter @gateway/worker test:coverage",
+    "test:coverage:report": "node scripts/test/aggregate-coverage.mjs",
+    "test:unit": "pnpm -r test:unit",
+    "test:db:migrate": "node scripts/test/migrate-test-db.mjs",
+    "db:generate": "pnpm --filter @gateway/database generate",
+    "db:migrate": "pnpm --filter @gateway/database migrate",
+    "db:migrate:deploy": "pnpm --filter @gateway/database migrate:deploy",
+    "db:reset": "pnpm --filter @gateway/database reset",
+    "db:studio": "pnpm --filter @gateway/database studio",
+    "db:provision-app-role": "dotenv -e .env -- pnpm --filter @gateway/database exec tsx prisma/provision-app-role.ts",
+    "seed": "dotenv -e .env -- pnpm --filter @gateway/database exec tsx prisma/seed.ts",
+    "dev:api": "pnpm --filter @gateway/api dev",
+    "dev:web": "pnpm --filter @gateway/web dev",
+    "dev:worker": "pnpm --filter @gateway/worker dev",
+    "dev:monitor": "pnpm --filter @gateway/blockchain-monitor dev",
+    "dev:infra": "docker compose up -d postgres redis",
+    "dev:infra:down": "docker compose down",
+    "dev:pg:start": "powershell -ExecutionPolicy Bypass -File scripts/dev-postgres.ps1 start",
+    "dev:pg:stop": "powershell -ExecutionPolicy Bypass -File scripts/dev-postgres.ps1 stop",
+    "dev:pg:status": "powershell -ExecutionPolicy Bypass -File scripts/dev-postgres.ps1 status",
+    "test:integration": "pnpm --filter @gateway/database test && pnpm --filter @gateway/webhooks test && pnpm --filter @gateway/ledger test && pnpm --filter @gateway/worker test && pnpm --filter @gateway/blockchain-monitor test",
+    "test:e2e:web": "pnpm --filter @gateway/web test:e2e",
+    "loadtest:seed": "dotenv -e .env -- pnpm --filter @gateway/api exec tsx loadtest/seed.ts",
+    "loadtest": "dotenv -e .env -- pnpm --filter @gateway/api exec tsx loadtest/run.ts",
+    "demo": "dotenv -e .env -- pnpm --filter @gateway/api exec tsx demo/run-demo.ts",
+    "licenses:check": "node scripts/licenses/check-licenses.mjs",
+    "notice": "node scripts/licenses/generate-notice.mjs",
+    "sbom": "node scripts/sbom/generate-sbom.mjs",
+    "audit:report": "node scripts/security/audit-report.mjs"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.19.0",
+    "@swc/core": "^1.16.2",
+    "@types/node": "^22.10.5",
+    "@vitest/coverage-v8": "^3.0.5",
+    "dotenv-cli": "^11.0.0",
+    "eslint": "^9.19.0",
+    "globals": "^15.14.0",
+    "typescript": "^5.7.3",
+    "typescript-eslint": "^8.20.0",
+    "unplugin-swc": "^1.6.0",
+    "vitest": "^3.0.5"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "esbuild",
+      "@prisma/client",
+      "prisma",
+      "argon2",
+      "@nestjs/core"
+    ],
+    "overrides": {
+      "deepmerge-ts": "^8.0.2",
+      "fastify": "^5.12.4"
+    }
+  }
+}
